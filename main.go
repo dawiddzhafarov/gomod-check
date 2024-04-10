@@ -1,37 +1,89 @@
 package main
 
 import (
+	"flag"
 	"fmt"
-	"io/ioutil"
+	"log"
+	"os"
 	"sort"
+	"strings"
 
-	"github.com/abiosoft/ishell"
 	"github.com/fatih/color"
-
+	ver "github.com/hashicorp/go-version"
+	"github.com/jedib0t/go-pretty/v6/table"
+	"github.com/jedib0t/go-pretty/v6/text"
+	"golang.org/x/crypto/ssh/terminal"
 	"golang.org/x/mod/modfile"
 )
 
-// FileName is the main file used for parsing
-var FileName = "go.mod"
+const (
+	goModFile   = "go.mod"
+	entryLength = 60
+)
+
+type config struct {
+	maxVersionsFlag  int
+	filterFlag       string
+	incompatibleFlag bool
+	terminalWidth    int
+}
+
+var (
+	blue   = color.New(color.FgBlue).SprintFunc()
+	yellow = color.New(color.FgYellow).SprintFunc()
+	green  = color.New(color.FgGreen).SprintFunc()
+	red    = color.New(color.FgGreen).SprintFunc()
+	cfg    = config{}
+)
+
+func init() {
+	flag.IntVar(&cfg.maxVersionsFlag, "max-versions", 10, "Specify how many versions to display.")                                                                                                                                                                   // validate?
+	flag.StringVar(&cfg.filterFlag, "filter", "major,minor,patch", "Filter out the version types to display, available values: `major`, `minor`, `patch`. In order to use two filters, separate them with a comma (,). By default, all version types are included.") // validate, valid values: minor,major,patch
+	flag.BoolVar(&cfg.incompatibleFlag, "show-incompatible", false, "Show incompatible versions, by default disabled.")                                                                                                                                              // validate, valid values: minor,major,patch
+	flag.Parse()
+	if cfg.maxVersionsFlag == 5 {
+		log.Fatal("Oj")
+	}
+	if err := validateFlagValues(); err != nil {
+		log.Fatal(err)
+	}
+}
+
+func validateFlagValues() error {
+	if cfg.maxVersionsFlag <= 0 || cfg.maxVersionsFlag > 1000 {
+		return fmt.Errorf("`max-version` can be between 1 and 1000")
+	}
+	if len(cfg.filterFlag) != 0 && (!strings.Contains(cfg.filterFlag, "major") || !strings.Contains(cfg.filterFlag, "minor") ||
+		!strings.Contains(cfg.filterFlag, "patch")) {
+		return fmt.Errorf("`filter` flag can be made up only from `major`, `minor` and `patch` values")
+	}
+
+	return nil
+}
 
 func main() {
+
+	fd := int(os.Stdin.Fd())
+	width, _, err := terminal.GetSize(fd)
+	fmt.Println(width)
+
+	versionSpace := width - entryLength
+	fmt.Println(versionSpace)
+
+	versionNumber := versionSpace / 10 // TODO HANDLE VISUALISATION
+	fmt.Println(versionNumber)
+
 	// Read in go mod file
-	dat, err := ioutil.ReadFile("./" + FileName)
+	data, err := os.ReadFile("./" + goModFile)
 	if err != nil {
 		panic(err)
 	}
 
-	// Pares file
-	file, err := modfile.Parse(FileName, dat, nil)
+	// Parse file
+	file, err := modfile.Parse(goModFile, data, nil)
 	if err != nil {
 		panic(err)
 	}
-
-	// Colors
-	red := color.New(color.FgRed).SprintFunc()
-	yellow := color.New(color.FgYellow).SprintFunc()
-	green := color.New(color.FgGreen).SprintFunc()
-	blue := color.New(color.FgBlue).SprintFunc()
 
 	var mods Mods
 	urlLength := 0
@@ -66,76 +118,112 @@ func main() {
 			latestVersionLength = len(mod.AvailableVersions[0].cleanString())
 		}
 
-		mods = append(mods, mod)
+		mods = append(mods, *mod)
 	}
 
 	// Sort mods by status
 	sort.Sort(mods)
 
-	// Create options
-	var options []string
-	hasIncompatible := false
-	for _, m := range mods {
-		urlStr := strPadding(m.Path, urlLength) + "   "
-		versionStr := strPadding(m.CurrentVersion.cleanString(), curVersionLength) + " -> " + strPadding(m.AvailableVersions[0].cleanString(), latestVersionLength)
-		if m.AvailableVersions[0].incompatible {
-			versionStr += " " + blue("I")
-			hasIncompatible = true
-		}
-		if m.Status == "major" {
-			options = append(options, red(urlStr)+versionStr)
-		} else if m.Status == "minor" {
-			options = append(options, yellow(urlStr)+versionStr)
-		} else if m.Status == "patch" {
-			options = append(options, green(urlStr)+versionStr)
-		}
-	}
-
-	if len(options) == 0 {
-		fmt.Println(green("You are all up to date!!!"))
-		return
-	}
-
-	shell := ishell.New()
-
-	shell.AddCmd(&ishell.Cmd{
-		Name: "checklist",
-		Help: "checklist prompt",
-		Func: func(c *ishell.Context) {
-			text := "Hit space to select modules you want to update. Ctrl + c to cancel\n"
-			text += green("Patch") + " " + yellow("Minor") + " " + red("Major") + " "
-			if hasIncompatible {
-				text += blue("I = Incompatible")
-			}
-			choices := c.Checklist(options, text, nil)
-
-			if len(choices) > 0 && choices[0] != -1 {
-				c.ClearScreen()
-				c.Println(green("Modules that were updated!!!"))
-				for _, i := range choices {
-					err := file.AddRequire(mods[i].Path, mods[i].AvailableVersions[0].original)
-					if err != nil {
-						c.Err(err)
-					}
-					c.Println(options[i])
-				}
-				file.Cleanup()
-				dat, err := file.Format()
-				if err != nil {
-					c.Err(err)
-				}
-
-				// Write back to file
-				err = ioutil.WriteFile("./"+FileName, dat, 644)
-				if err != nil {
-					c.Err(err)
-				}
-			}
-
-			shell.Close()
+	t := table.NewWriter()
+	t.SetOutputMirror(os.Stdout)
+	t.AppendHeader(table.Row{"#", "Dependency", "Current Version", "Available Versions"})
+	t.SetColumnConfigs([]table.ColumnConfig{
+		{
+			Name:     "#",
+			WidthMax: 3,
+			Align:    text.AlignCenter,
+		},
+		{
+			Name:     "Dependency",
+			WidthMax: 30,
+			Align:    text.AlignCenter,
+		},
+		{
+			Name:     "Current Version",
+			WidthMax: 17,
+			Align:    text.AlignCenter,
+		},
+		{
+			Name:     "Available Versions",
+			WidthMax: versionSpace,
 		},
 	})
 
-	shell.Process("checklist")
-	shell.Run()
+	for i, mod := range mods {
+		var newVersions []string
+		for _, availableVer := range mod.AvailableVersions {
+			currentVersion, err := ver.NewVersion(mod.CurrentVersion.original)
+			if err != nil {
+				panic(err)
+			}
+			availableVersion, err := ver.NewVersion(availableVer.original)
+			if availableVersion.GreaterThan(currentVersion) {
+				if v := filterVersions(availableVer, cfg.incompatibleFlag, cfg.filterFlag); v != "" {
+					newVersions = append(newVersions, v)
+				}
+			}
+		}
+		if len(newVersions) != 0 {
+			unwrapRows(i, mod.Path, mod.CurrentVersion.original, versionNumber, newVersions, t)
+		}
+	}
+	if t.Length() != 0 {
+		t.AppendSeparator()
+		t.Render()
+	} else {
+		fmt.Println("There are no newer versions that fulfill provided requirements.")
+		fmt.Printf("Filter: %s", cfg.filterFlag)
+	}
+}
+
+func unwrapRows(i int, path string, curVersion string, num int, versions []string, t table.Writer) {
+	length := len(versions)
+	if length > num {
+		t.AppendRow([]interface{}{i + 1, blue(path), curVersion, strings.Join(versions[:num], ", ")})
+		for length > num {
+			length -= num
+			versions = versions[num:]
+			if len(versions) < num {
+				t.AppendRow([]interface{}{"", "", "", strings.Join(versions, ", ")})
+				t.AppendSeparator()
+			} else {
+				t.AppendRow([]interface{}{"", "", "", strings.Join(versions[:num], ", ")})
+			}
+		}
+	} else {
+		t.AppendRow([]interface{}{i + 1, blue(path), curVersion, strings.Join(versions, ", ")})
+		t.AppendSeparator()
+	}
+}
+
+func filterVersions(ver version, showIncompatible bool, filter string) string {
+	if !showIncompatible && ver.incompatible {
+		return ""
+	}
+
+	if filter == "" {
+		return colorVersion(ver.status, ver.original)
+	}
+
+	filters := strings.Split(filter, ",")
+	for _, fil := range filters {
+		if strings.Contains(ver.status, fil) {
+			return colorVersion(ver.status, ver.original)
+		}
+	}
+
+	return ""
+}
+
+func colorVersion(status string, version string) string {
+	switch status {
+	case "minor":
+		return yellow(version)
+	case "major":
+		return red(version)
+	case "patch":
+		return green(version)
+	default:
+		return blue(version)
+	}
 }

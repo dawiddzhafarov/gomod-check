@@ -14,7 +14,7 @@ import (
 var allowed = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ-0123456789"
 var versionRegex = regexp.MustCompile(`^v?([0-9]+)(\.[0-9]+)?(\.[0-9]+)?(-([0-9A-Za-z\-]+(\.[0-9A-Za-z\-]+)*))?(\+([0-9A-Za-z\-]+(\.[0-9A-Za-z\-]+)*))?$`)
 
-type versions []*version
+type versions []version
 
 func (v versions) Len() int           { return len(v) }
 func (v versions) Less(i, j int) bool { return v[i].compare(v[j]) > 0 }
@@ -27,13 +27,14 @@ type version struct {
 	metadata            string
 	incompatible        bool
 	original            string
+	status              string
 }
 
 func (v *version) cleanString() string {
 	return fmt.Sprintf("v%d.%d.%d", v.major, v.minor, v.patch)
 }
 
-func getProxyVersions(url string, skipPrelease bool) versions {
+func getProxyVersions(current *version, url string, skipPrelease bool) versions {
 	resp, err := http.Get(fmt.Sprintf("https://proxy.golang.org/%s/@v/list", url))
 	if err != nil {
 		panic(err)
@@ -49,7 +50,7 @@ func getProxyVersions(url string, skipPrelease bool) versions {
 	var vs versions
 	versionsString := strings.Split(string(body), "\n")
 	for _, vss := range versionsString {
-		v, err := parseVersion(vss)
+		v, err := parseVersion(current, vss)
 		if err != nil {
 			// If has error parsing skip it
 			continue
@@ -57,7 +58,7 @@ func getProxyVersions(url string, skipPrelease bool) versions {
 		if skipPrelease && v.prerelease != "" {
 			continue
 		}
-		vs = append(vs, v)
+		vs = append(vs, *v)
 	}
 	sort.Sort(vs)
 
@@ -65,7 +66,7 @@ func getProxyVersions(url string, skipPrelease bool) versions {
 }
 
 // parseVersion parses a given version mod
-func parseVersion(v string) (*version, error) {
+func parseVersion(current *version, v string) (*version, error) {
 	m := versionRegex.FindStringSubmatch(v)
 	if m == nil {
 		return nil, errors.New("Invalid Semantic Version")
@@ -127,10 +128,15 @@ func parseVersion(v string) (*version, error) {
 		}
 	}
 
+	if current != nil {
+		status := reconcileStatus(current, sv)
+		sv.status = status
+	}
+
 	return sv, nil
 }
 
-func (v *version) compare(v2 *version) int {
+func (v *version) compare(v2 version) int {
 	if d := compareSegment(v.major, v2.major); d != 0 {
 		return d
 	}

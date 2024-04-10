@@ -1,9 +1,11 @@
 package main
 
-import "errors"
+import (
+	"errors"
+)
 
 // Mods is an alias to an array of mods
-type Mods []*Mod
+type Mods []Mod
 
 // Mod is the main struct containing path, current version and possible available versions
 type Mod struct {
@@ -17,7 +19,7 @@ func (v Mods) Len() int           { return len(v) }
 func (v Mods) Less(i, j int) bool { return v[i].compare(v[j]) > 0 }
 func (v Mods) Swap(i, j int)      { v[i], v[j] = v[j], v[i] }
 
-func (m *Mod) compare(m2 *Mod) int {
+func (m Mod) compare(m2 Mod) int {
 	if statusInt(m.Status) < statusInt(m2.Status) {
 		return -1
 	}
@@ -43,22 +45,22 @@ func statusInt(status string) int {
 // NewMod will parse the current version and get all possible versions for this package
 func NewMod(path string, version string) (*Mod, error) {
 	// Parse current version
-	current, err := parseVersion(version)
+	current, err := parseVersion(nil, version)
 	if err != nil {
 		return nil, err
 	}
 
 	// Get all available versions
-	vs := getProxyVersions(path, true)
+	vs := getProxyVersions(current, path, true)
 
-	// Lets make sure their is a latest version to get
+	// Let's make sure there is a latest version to get
 	if len(vs) == 0 {
 		return nil, errors.New("No latest version")
 	}
 
 	latest := vs[0]
 
-	// Check if current version is up to date
+	// Check if current version is up-to-date
 	status := ""
 	compare := current.compare(latest)
 	if compare >= 0 {
@@ -77,4 +79,17 @@ func NewMod(path string, version string) (*Mod, error) {
 		AvailableVersions: vs,
 		Status:            status,
 	}, nil
+}
+
+func reconcileStatus(current *version, latest *version) string {
+	if current.major == latest.major && current.minor == latest.minor && current.patch == latest.patch {
+		return "current"
+	} else if latest.major > current.major {
+		return "major"
+	} else if latest.minor > current.minor {
+		return "minor"
+	} else if latest.patch > current.patch {
+		return "patch"
+	}
+	return "OJ"
 }
